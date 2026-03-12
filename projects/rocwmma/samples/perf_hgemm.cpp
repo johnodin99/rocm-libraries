@@ -743,6 +743,9 @@ ROCWMMA_HOST void gemm_test(uint32_t m, uint32_t n, uint32_t k, ComputeT alpha, 
 
 int main()
 {
-    gemm_test(7168, 7168, 7168, 2, 2);
+    // gemm_test(7168, 7168, 7168, 2, 2);
+
+    // Quick test
+    gemm_test(128, 64, 64, 2, 2);
     return 0;
 }
