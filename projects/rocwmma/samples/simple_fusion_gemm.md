@@ -1,4 +1,4 @@
-# simple_fusion_gemm: gfx12 (RDNA4) Porting Notes
+# simple_fusion_gemm: Architecture Porting Notes (CDNA & RDNA)
 
 ## Bug Fix 1: WARP_SIZE Mismatch
 
@@ -22,10 +22,31 @@ gfx1201 (RDNA4) uses wave32, causing all geometry calculations to be wrong.
 `WARP_SIZE` is a **compile-time constant** baked into all kernel geometry.
 Host-side `getWarpSize()` check validates hardware but doesn't fix kernel constants.
 
-### Fix
-```diff
-- WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_64
-+ WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_32
+### Fix (Unified CDNA & RDNA Support)
+To support both CDNA (wave64) and RDNA (wave32) architectures seamlessly, we introduced architecture-specific configuration namespaces (`gfx9Params` and `gfx11Params`). The device code uses preprocessor directives (`#if(ROCWMMA_ARCH_GFX9)`) to ensure the correct `WARP_SIZE` is statically compiled, while the host code uses `isGfx9()` to dynamically pick parameters at runtime.
+
+```cpp
+namespace gfx9Params {
+    // ...
+    WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_64
+};
+
+namespace gfx11Params {
+    // ...
+    WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_32
+};
+
+#if(ROCWMMA_ARCH_GFX9)
+using namespace gfx9Params;
+#else
+using namespace gfx11Params;
+#endif
+```
+
+And on the host side:
+```cpp
+uint32_t hWARP_TILE_X = isGfx9() ? gfx9Params::TBLOCK_X : gfx11Params::TBLOCK_X;
+// ...
 ```
 
 ---

@@ -229,12 +229,30 @@ namespace gfx9Params
         BLOCKS_Y  = 2u,
         TBLOCK_X  = 128u,
         TBLOCK_Y  = 2u,
-        WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_32
-        //WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_64
+        WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_64
     };
 }
 
+namespace gfx11Params
+{
+    enum kernelParams : uint32_t
+    {
+        ROCWMMA_M = 16u,
+        ROCWMMA_N = 16u,
+        ROCWMMA_K = 32u,
+        BLOCKS_X  = 2u,
+        BLOCKS_Y  = 2u,
+        TBLOCK_X  = 128u,
+        TBLOCK_Y  = 2u,
+        WARP_SIZE = Constants::AMDGCN_WAVE_SIZE_32
+    };
+}
+
+#if(ROCWMMA_ARCH_GFX9)
 using namespace gfx9Params;
+#else
+using namespace gfx11Params;
+#endif // defined(ROCWMMA_ARCH_GFX9)
 
 ///
 /// Types and Data Layouts
@@ -759,13 +777,13 @@ __host__ void gemm_act_cpu(uint32_t      m,
 ROCWMMA_HOST void gemm_test(uint32_t m, uint32_t n, uint32_t k)
 {
     // Runtime checks for host parameters
-    uint32_t hTBLOCK_X    = gfx9Params::TBLOCK_X;
-    uint32_t hTBLOCK_Y    = gfx9Params::TBLOCK_Y;
-    uint32_t hBLOCKS_X    = gfx9Params::BLOCKS_X;
-    uint32_t hBLOCKS_Y    = gfx9Params::BLOCKS_Y;
-    uint32_t hROCWMMA_M   = gfx9Params::ROCWMMA_M;
-    uint32_t hROCWMMA_N   = gfx9Params::ROCWMMA_N;
-    uint32_t hROCWMMA_K   = gfx9Params::ROCWMMA_K;
+    uint32_t hTBLOCK_X    = isGfx9() ? gfx9Params::TBLOCK_X : gfx11Params::TBLOCK_X;
+    uint32_t hTBLOCK_Y    = isGfx9() ? gfx9Params::TBLOCK_Y : gfx11Params::TBLOCK_Y;
+    uint32_t hBLOCKS_X    = isGfx9() ? gfx9Params::BLOCKS_X : gfx11Params::BLOCKS_X;
+    uint32_t hBLOCKS_Y    = isGfx9() ? gfx9Params::BLOCKS_Y : gfx11Params::BLOCKS_Y;
+    uint32_t hROCWMMA_M   = isGfx9() ? gfx9Params::ROCWMMA_M : gfx11Params::ROCWMMA_M;
+    uint32_t hROCWMMA_N   = isGfx9() ? gfx9Params::ROCWMMA_N : gfx11Params::ROCWMMA_N;
+    uint32_t hROCWMMA_K   = isGfx9() ? gfx9Params::ROCWMMA_K : gfx11Params::ROCWMMA_K;
     uint32_t hWARP_TILE_X = hBLOCKS_X * hROCWMMA_M;
     uint32_t hWARP_TILE_Y = hBLOCKS_Y * hROCWMMA_N;
 
@@ -963,10 +981,7 @@ ROCWMMA_HOST void gemm_test(uint32_t m, uint32_t n, uint32_t k)
 
 int main()
 {
-    gemm_test(128, 128, 64);
-    // if(isGfx9())
-        // gemm_test(128, 128, 64);
-    // else
-        // std::cout << "This sample not tested on gfx11/gfx12 yet!" << std::endl;
+    gemm_test(8192, 8192, 128);
+
     return 0;
 }
