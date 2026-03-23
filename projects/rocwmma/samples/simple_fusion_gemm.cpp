@@ -294,7 +294,7 @@ namespace gfx11Params
     {
         ROCWMMA_M = 16u,
         ROCWMMA_N = 16u,
-        ROCWMMA_K = 32u,
+        ROCWMMA_K = 16u,
         BLOCKS_X  = 2u,
         BLOCKS_Y  = 2u,
         TBLOCK_X  = 128u,
