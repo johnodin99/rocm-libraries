@@ -1,5 +1,5 @@
 1) 整體程式 flow
-
+```mermaid
 flowchart TD
     A[main] --> B[swiglu_test]
     B --> C[printHardwareInfo]
@@ -16,14 +16,14 @@ flowchart TD
     M --> N{Validation pass?}
     N -->|Yes| O[PASSED]
     N -->|No| P[FAILED]
-
+```
 
 ⸻
 
 2) Kernel 內部 flow
 
 這一版比較接近你現在 code 的邏輯：
-
+```mermaid
 flowchart TD
     A[Kernel start<br/>gemm_swiglu_hadamard] --> B[Compute block/tile coordinates]
     B --> C[Create LDS buffers<br/>A / B_gate / B_up]
@@ -45,18 +45,18 @@ flowchart TD
     O --> P[Barrier sync]
     P --> I
 
-    M -->|No| Q[Apply SwiGLU elementwise<br/>D_compute = silu(AccGate) * AccUp]
+    M -->|No| Q["Apply SwiGLU elementwise<br/>D_compute = silu(AccGate) * AccUp"]
     Q --> R[Convert compute fragment to output fragment]
     R --> S[Store final D to global memory]
     S --> T[Kernel end]
-
+```
 
 ⸻
 
 3) 更細一點：資料觀點 flow
 
 這版是從數學資料流來看，比較容易跟模型概念對上：
-
+```mermaid
 flowchart LR
     A[Input A] --> G1[GEMM 1]
     BG[B_gate] --> G1
@@ -72,7 +72,7 @@ flowchart LR
 
     H --> O[Cast to output type<br/>half/float]
     O --> D[Store D]
-
+```
 數學上就是：
 
 Gate = A × B_gate
@@ -86,6 +86,7 @@ D    = silu(Gate) × Up
 
 這版是把 kernel 中的硬體動作拆開：
 
+```mermaid
 flowchart TD
     A[Global Memory] --> B[globalReadCoopA / globalReadCoopBg / globalReadCoopBu]
     B --> C[LDS write<br/>localWriteA / localWriteBg / localWriteBu]
@@ -101,21 +102,21 @@ flowchart TD
     K --> L[Output fragment conversion]
     L --> M[globalWriteD]
     M --> N[Global Memory D]
-
+```
 
 ⸻
 
 5) 目前這份 code 的核心重點
 
 你現在這版和前一版最大的差異，其實就在這裡：
-
+```mermaid
 flowchart LR
     A[AccGate float] --> C[Elementwise SwiGLU in float]
     B[AccUp float] --> C
     C --> D[Intermediate D in float]
     D --> E[Convert to output fragment]
     E --> F[Store to final output]
-
+```
 也就是：
 	•	先用 float accumulator 做完整計算
 	•	最後才轉成 output type
@@ -137,6 +138,7 @@ flowchart LR
 
 7) 如果你要放在筆記裡，我建議用這張最簡版
 
+```mermaid
 flowchart LR
     A[A tile] --> G1[MFMA with B_gate tile]
     BG[B_gate tile] --> G1
@@ -152,7 +154,7 @@ flowchart LR
 
     M --> C[Convert to output type]
     C --> D[Store D tile]
-
+```
 
 ⸻
 
@@ -576,6 +578,7 @@ C_{ij} = A_{ij} B_{ij}
 
 假設：
 
+$$
 X =
 \begin{bmatrix}
 1 & 2 \\
@@ -587,9 +590,11 @@ Y =
 10 & 20 \\
 30 & 40
 \end{bmatrix}
+$$
 
 那 Hadamard product 是：
 
+$$
 X \odot Y =
 \begin{bmatrix}
 1 \times 10 & 2 \times 20 \\
@@ -600,14 +605,17 @@ X \odot Y =
 10 & 40 \\
 90 & 160
 \end{bmatrix}
+$$
 
 ⸻
 
 在 SwiGLU 裡，它扮演什麼角色？
 
 SwiGLU 本質上就是一種 gating：
-
+$$
 \mathrm{SwiGLU}(x) = \mathrm{SiLU}(xW_g) \odot (xW_u)
+$$
+
 
 意思是：
 	•	一條路徑產生 gate
