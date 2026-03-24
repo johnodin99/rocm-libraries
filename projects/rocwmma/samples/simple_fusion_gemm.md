@@ -72,6 +72,66 @@
    - 再算 `S_i8 x V`
    - 與 GPU `D` 比對（`1285-1327`）。
 
+## 3.5 `LAUNCH` 巨集設計說明（第 1161–1218 行）
+
+### 問題背景
+
+Kernel 是 **template function**，`SV_ITERS` 必須是編譯期常數：
+
+```cpp
+template <int SV_ITERS>
+ROCWMMA_KERNEL void gemm_rocwmma_d(...) {
+    MfmaFragAcc fragsOut[SV_ITERS][BLOCKS_X][BLOCKS_Y]; // 必須是 compile-time 大小
+    ...
+}
+```
+
+但 `sv_iterations` 是執行期計算出來的：
+
+```cpp
+const uint32_t sv_iterations = (k + MACRO_TILE_Y - 1) / MACRO_TILE_Y; // runtime value
+```
+
+### 解決方式：switch/case 分派表
+
+用 `#define LAUNCH(SV)` 巨集展開成 switch/case，把每個可能的執行期值對應到各自的編譯期模板：
+
+```
+LAUNCH(N) 展開後 =
+    case N:
+        hipExtLaunchKernelGGL(gemm_rocwmma_d<N>, gridDim, blockDim, ldsusage, ...)
+        break;
+```
+
+最終等同於：
+
+```cpp
+switch(sv_iterations)
+{
+    case 1:  hipExtLaunchKernelGGL(gemm_rocwmma_d<1>,  ...); break;
+    case 2:  hipExtLaunchKernelGGL(gemm_rocwmma_d<2>,  ...); break;
+    ...
+    case 32: hipExtLaunchKernelGGL(gemm_rocwmma_d<32>, ...); break;
+    default: printf("Error: exceeds max (32)..."); return;
+}
+```
+
+### 為何 GPU kernel 不能用動態陣列
+
+| 限制 | 原因 |
+|---|---|
+| 不支援 VLA（Variable Length Array） | HIP/ROCM device 函式中，local array 大小必須在編譯期確定 |
+| 不支援動態棧分配（alloca） | GPU register file 靜態分配，大小由編譯器在 JIT/AOT 時決定 |
+| template 展開 | 每個 `<SV>` 值都會生成一個獨立的 kernel binary，暫存器用量各自最佳化 |
+
+### 上限與擴展
+
+- 目前最多支援 `sv_iterations = 32`
+- `sv_iterations = k / MACRO_TILE_Y`，若 k 很大需增加 case 數
+- 超出上限時 `default` 僅印錯誤訊息，timer 仍會繼續（見 P1 改進建議）
+
+---
+
 ## 4) 可改進處（依優先級）
 
 ### P0（建議先處理）
@@ -364,3 +424,106 @@ flowchart TD
 - 若計算 fused 兩段 GEMM，理論 FLOPs 近似為：
   - `2*m*n*k`（stage1）+ `2*m*n*k`（stage2）= `4*m*n*k`
 - 若只用單段 GEMM 公式，TFLOPS 會被低估。
+
+---
+
+# simple_gemm_rmsnorm: Compile Error Fix (gfx1201 / RDNA4)
+
+**Date:** 2026-03-24 | **Hardware:** RX 9070 (`gfx1201`, wave32)
+
+## Issue Summary
+
+7 compile errors when building `simple_gemm_rmsnorm.cpp` targeting `gfx1201`.
+
+```
+error: no type named 'DataLayout' in 'rocwmma::IOLayoutInt<rocwmma::accumulator, 16, 16, float, ...>'
+error: no type named 'PreStoreXForm' in 'rocwmma::IOConfig<rocwmma::accumulator, ...>'
+error: no type named 'Storer' in 'rocwmma::IOConfig<rocwmma::accumulator, ...>'
+error: static assertion failed: Must provide data layout.
+```
+
+## Root Cause
+
+`MfmaFragAcc` was declared without a `DataLayout` template argument:
+
+```cpp
+// WRONG: no DataLayout -> GetDataLayout_t<> and typed store_matrix_sync fail
+using MfmaFragAcc = fragment<accumulator, ROCWMMA_M, ROCWMMA_N, ROCWMMA_K, ComputeT>;
+```
+
+The rocWMMA `accumulator` fragment is the only role that allows `DataLayout = void` (for pure
+MFMA accumulation), but two APIs require it to be concrete:
+
+| API | Requirement |
+|---|---|
+| `GetDataLayout_t<Frag>` | Frag must have `IOLayout::DataLayout` (not void) |
+| `store_matrix_sync(addr, frag, ld)` | Frag must have a static DataLayout; fires static_assert |
+
+Both were used in `globalWriteC()` and its call site in `gemm_rocwmma()`.
+
+## Fix Strategy
+
+Add a layout-annotated alias used **only** for offset arithmetic and `store_matrix_sync`.
+MFMA accumulation continues to use the original `MfmaFragAcc` (no DataLayout constraint):
+
+```cpp
+using MfmaFragAcc      = fragment<accumulator, ROCWMMA_M, ROCWMMA_N, ROCWMMA_K, ComputeT>;
+// New: same type, adds DataLayoutD for compile-time queries and store calls only
+using MfmaFragAccStore = fragment<accumulator, ROCWMMA_M, ROCWMMA_N, ROCWMMA_K, ComputeT, DataLayoutD>;
+```
+
+Changes to `globalWriteC()`:
+
+```cpp
+// Before (failed to compile)
+using Mapper1d = GetDataLayout_t<MfmaFragAcc>;
+store_matrix_sync(gAddrC + offsetY, fragsC[i][j], ldc);
+
+// After (compiles and correct)
+using Mapper1d = GetDataLayout_t<MfmaFragAccStore>;
+store_matrix_sync(gAddrC + offsetY, apply_data_layout<DataLayoutD>(fragsC[i][j]), ldc);
+```
+
+Call site in `gemm_rocwmma()`:
+
+```cpp
+// Before
+using MfmaFragAccMap1d = GetDataLayout_t<MfmaFragAcc>;
+
+// After
+using MfmaFragAccMap1d = GetDataLayout_t<MfmaFragAccStore>;
+```
+
+## Design Notes
+
+### Why Two-Pass is Correct for RMSNorm on gfx1201
+
+The original single-pass fused design had two potential correctness issues on wave32/gfx1201:
+
+| Issue | Description |
+|---|---|
+| Partial-row RMSNorm | Each warp tile only covers 32 columns, but RMSNorm needs all N=256 columns |
+| gfx1201 lane mapping | WMMA accumulator is column-distributed on gfx1201; hand-written lane indexing would be wrong |
+
+Both are avoided by the two-pass design:
+- **Pass 1** (`gemm_rocwmma`): rocWMMA GEMM writes `float32` to workspace `d_c` via `store_matrix_sync` (architecture-agnostic)
+- **Pass 2** (`rmsnorm_apply_kernel`): each GPU thread reads one **complete row** of `d_c`, computes true full-row RMSNorm, writes fp16 `d_d`
+
+No manual fragment register indexing is needed anywhere.
+
+### gfx12 Reuses gfx11Params (Acceptable Here)
+
+`gfx12` falls into the `#else` branch that uses `gfx11Params` (wave32, 16x16x16).
+This is safe for this sample because neither kernel inspects accumulator element distribution internally.
+
+## Validation Result
+
+```
+Device: AMD Radeon RX 9070 | gfx1201 | wave32
+Matrix: m=128 n=256 k=128
+PASSED
+Max relative error: 0
+Elapsed: 0.312 ms | 0.134 TFlops/s
+```
+
+`Max relative error: 0` confirms bit-exact match with the CPU float32 reference.
