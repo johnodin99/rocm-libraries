@@ -72,10 +72,15 @@ function(add_community_sample TARGET_NAME SOURCE_FILE)
   )
 endfunction()
 
-# Community samples will be added here
-# Use template.cpp as a starting point for new samples
-#
-# Example:
-# add_community_sample(example_name ${CMAKE_CURRENT_SOURCE_DIR}/example_name.cpp)
-#
+# Community samples
 # Note: template.cpp is not built as a sample - it's only a reference template
+
+add_community_sample(simple_batched_hgemm   ${CMAKE_CURRENT_SOURCE_DIR}/simple_batched_hgemm.cpp)
+add_community_sample(simple_flash_attn      ${CMAKE_CURRENT_SOURCE_DIR}/simple_flash_attn.cpp)
+add_community_sample(simple_fragment_ops    ${CMAKE_CURRENT_SOURCE_DIR}/simple_fragment_ops.cpp)
+add_community_sample(simple_fusion_gemm     ${CMAKE_CURRENT_SOURCE_DIR}/simple_fusion_gemm.cpp)
+add_community_sample(simple_gemm_act        ${CMAKE_CURRENT_SOURCE_DIR}/simple_gemm_act.cpp)
+add_community_sample(simple_gemm_rmsnorm    ${CMAKE_CURRENT_SOURCE_DIR}/simple_gemm_rmsnorm.cpp)
+add_community_sample(simple_gemm_softmax    ${CMAKE_CURRENT_SOURCE_DIR}/simple_gemm_softmax.cpp)
+add_community_sample(simple_gemm_swiglu     ${CMAKE_CURRENT_SOURCE_DIR}/simple_gemm_swiglu.cpp)
+add_community_sample(simple_outer_product   ${CMAKE_CURRENT_SOURCE_DIR}/simple_outer_product.cpp)
