@@ -574,8 +574,8 @@ if( MIOPEN_BACKEND MATCHES "OpenCL" OR MIOPEN_BACKEND STREQUAL "HIPOC" OR MIOPEN
         kernels/MIOpenGetitem.cpp
         kernels/MIOpenKthvalue.cpp
         kernels/MIOpenLayerNorm.cpp
-        kernels/MIOpenLRNBwd.cl
-        kernels/MIOpenLRNFwd.cl
+        kernels/MIOpenLRNBwd.cpp
+        kernels/MIOpenLRNFwd.cpp
         kernels/MIOpenMultiMarginLoss.cpp
         kernels/MIOpenNeuron.cpp
         kernels/MIOpenPReLU.cpp
@@ -939,8 +939,6 @@ if(MIOPEN_USE_COMPOSABLEKERNEL)
         set(MIOPEN_CK_LINK_FLAGS composable_kernel::device_conv_operations hip::host)
         
         if(MIOPEN_CK_BUILDER_EXPERIMENTAL)
-            add_subdirectory(kernels/ck_builder)
-            list(APPEND MIOPEN_CK_LINK_FLAGS ck_builder)
             add_definitions(-DCK_EXPERIMENTAL_BUILDER)
         endif()
     endif()
