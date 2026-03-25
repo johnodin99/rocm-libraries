@@ -82,6 +82,11 @@ using rocwmma::float32_t;
 // ---------------------------------------------------------------------------
 
 // AMDGCN_WAVE_SIZE: 64 for gfx9, 32 for gfx11/gfx12
+//
+// IMPORTANT: ROCWMMA_ARCH_GFX9 is device-compile-only (see config.hpp).
+// During host compilation, ROCWMMA_ARCH_HOST=1 and all arch flags are 0.
+// This means WAVE_SIZE_CT / BLOCK_SIZE / ELEMS_PER_THREAD are correct
+// ONLY in device code.  Host code MUST use runtime warpSize instead.
 #if ROCWMMA_ARCH_GFX9
 constexpr uint32_t WAVE_SIZE_CT = rocwmma::Constants::AMDGCN_WAVE_SIZE_64;
 #else
@@ -106,12 +111,13 @@ constexpr uint32_t ELEMS_PER_THREAD = HEAD_DIM / BLOCK_SIZE;
 // Device helpers
 // ---------------------------------------------------------------------------
 
-// Warp-level sum reduction using __shfl_xor.
-// Works for Wave32 (gfx12) and Wave64 (gfx9): loop starts at WAVE_SIZE_CT/2.
+// Warp-level sum reduction via __shfl_xor.
+// Uses compile-time BLOCK_SIZE / 2 so #pragma unroll can fully unroll.
+// BLOCK_SIZE == warpSize because of __AMDGCN_WAVEFRONT_SIZE__ detection.
 ROCWMMA_DEVICE inline float warp_reduce_sum(float val)
 {
 #pragma unroll
-    for(int off = (int)(WAVE_SIZE_CT / 2); off > 0; off >>= 1)
+    for(int off = (int)(BLOCK_SIZE / 2); off > 0; off >>= 1)
         val += __shfl_xor(val, off);
     return val;
 }
@@ -123,7 +129,7 @@ ROCWMMA_DEVICE inline float warp_reduce_sum(float val)
 // Maintains per-thread unnormalized output o[ELEMS_PER_THREAD] and
 // warp-uniform scalars m (running max) and l (running norm).
 //
-// Shared memory layout (lds_bytes = 2*TILE_K*HEAD_DIM*4 + TILE_K*4 bytes):
+// Shared memory layout:
 //   float lds_k[TILE_K * HEAD_DIM]   K tile
 //   float lds_v[TILE_K * HEAD_DIM]   V tile
 //   float lds_s[TILE_K]              dot-product scores for this tile
@@ -336,21 +342,33 @@ __host__ void run_flash_attn_sample(uint32_t seq, uint32_t head)
 {
     printDeviceInfo();
 
-    if((seq % TILE_K) || (head % BLOCK_SIZE))
+    // Query runtime warp size.
+    // ROCWMMA_ARCH_GFX9 is device-compile-only, so the compile-time BLOCK_SIZE
+    // seen by host code is always 32 (ROCWMMA_ARCH_HOST path).  We MUST use
+    // the runtime warpSize for launch configuration and LDS sizing so that it
+    // matches the device-side BLOCK_SIZE on gfx9 (Wave64).
+    hipDevice_t     dev;
+    hipDeviceProp_t prop;
+    CHECK_HIP_ERROR(hipGetDevice(&dev));
+    CHECK_HIP_ERROR(hipGetDeviceProperties(&prop, dev));
+    uint32_t rtWarpSize  = prop.warpSize;          // 32 or 64
+    uint32_t rtElems     = head / rtWarpSize;       // elements per thread
+
+    if((seq % TILE_K) || (head % rtWarpSize))
     {
         std::cout << "Unsupported size: seq must be multiple of TILE_K=" << TILE_K
-                  << ", head must be multiple of BLOCK_SIZE=" << BLOCK_SIZE << "\n";
+                  << ", head must be multiple of warpSize=" << rtWarpSize << "\n";
         return;
     }
 
     float32_t scale = 1.0f / std::sqrtf((float)head);
 
     std::cout << "Flash Attention: S=" << seq << "  D=" << head
-              << "  TILE_K=" << TILE_K << "  BLOCK_SIZE=" << BLOCK_SIZE
-              << "  ELEMS=" << ELEMS_PER_THREAD
+              << "  TILE_K=" << TILE_K << "  BLOCK_SIZE=" << rtWarpSize
+              << "  ELEMS=" << rtElems
               << "  scale=" << scale << "\n\n";
 
-    // LDS per block (bytes)
+    // LDS per block (bytes) — use runtime warpSize, not compile-time BLOCK_SIZE
     uint32_t lds_bytes = (2u * TILE_K * head + TILE_K) * sizeof(float);
     std::cout << "LDS per block: " << lds_bytes << " bytes\n\n";
 
@@ -382,9 +400,9 @@ __host__ void run_flash_attn_sample(uint32_t seq, uint32_t head)
     CHECK_HIP_ERROR(hipMemcpy(d_k, matK.data(), seq * head * sizeof(float16_t), hipMemcpyHostToDevice));
     CHECK_HIP_ERROR(hipMemcpy(d_v, matV.data(), seq * head * sizeof(float16_t), hipMemcpyHostToDevice));
 
-    // Grid: one block per query row
+    // Grid: one block per query row.  Block = one warp (runtime size).
     dim3 gridDim(seq, 1);
-    dim3 blockDim(BLOCK_SIZE, 1);
+    dim3 blockDim(rtWarpSize, 1);
 
     std::cout << "grid=(" << gridDim.x << "," << gridDim.y
               << ")  block=(" << blockDim.x << "," << blockDim.y << ")\n\n";

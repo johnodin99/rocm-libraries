@@ -1,3 +1,555 @@
+**放在 `rocm-libraries` 這個 monorepo 是對的。**
+`ROCm/rocWMMA` 舊 repo 已經標成 retired，現在應該改往 `ROCm/rocm-libraries` 開發；而且 `rocwmma` 在 monorepo 裡已經是完成遷移的子專案。([GitHub][1])
+
+但如果你問的是：
+
+> 這份 PR 要直接放在 `projects/rocwmma/samples/` 根目錄，適不適合？
+
+我的答案是：
+
+## **不太建議直接放 root `samples/`，比較適合放 `samples/community/`**
+
+原因很直接。
+
+目前官方 `samples/` 根目錄裡的內容型態很明確，基本上是：
+
+* `simple_*`：像 `simple_hgemm.cpp`、`simple_sgemm.cpp`、`simple_dgemv.cpp`
+* `perf_*`：像 `perf_hgemm.cpp`、`perf_sgemm.cpp`
+* 還有少數特定示範，如 `simple_dlrm.cpp`、`hipRTC_gemm.cpp` ([GitHub][2])
+
+這表示 root `samples/` 的風格偏向：
+
+* 核心 API 示範
+* 經典 GEMM/GEMV 類型
+* 比較官方、穩定、容易維護的 sample ([GitHub][2])
+
+但 `samples/community/README.md` 寫得非常明白：
+這個目錄就是留給 **community-contributed advanced / specialized / experimental samples**，特別包含：
+
+* advanced kernel fusion
+* specialized machine learning operations
+* performance optimization strategies
+* complex multi-technique examples
+* experimental or cutting-edge research applications ([GitHub][3])
+
+而你這份 `simple_gemm_rmsnorm.cpp` 的內容，實際上是：
+
+* rocWMMA GEMM
+* 再接一個 RMSNorm kernel
+* 有 float workspace `d_c`
+* 有 benchmark
+* 有 CPU reference validation
+* 有 LDS ping-pong buffer 設計   
+
+這種性質明顯比 `simple_hgemm.cpp` 那一類官方基礎 sample 更進階，也更接近 community README 裡講的：
+
+* specialized ML op
+* optimization
+* complex multi-technique example ([GitHub][3])
+
+所以我會建議你：
+
+## 最佳落點
+
+**`projects/rocwmma/samples/community/`**
+
+而不是：
+**`projects/rocwmma/samples/` 根目錄**
+
+---
+
+## 更精準地說
+
+### 適合放 `samples/community/` 的情況
+
+你的目標是下面這種：
+
+* 展示 rocWMMA 怎麼接近 LLM / ML 實際 workload
+* 展示 GEMM + post-op / RMSNorm pipeline
+* 展示比較進階的資料搬運、LDS、benchmark、validation
+* 接受它不是最簡、最純的 rocWMMA 入門 sample ([GitHub][3]) 
+
+這種情況，**community sample 很適合**。
+
+---
+
+### 比較適合放 root `samples/` 的情況
+
+如果你願意把它改成：
+
+* 更小、更純
+* rocWMMA 本體更突出
+* 少掉一部分 post-op / benchmark / CPU ref / 複雜 helper
+* 更像 `simple_hgemm.cpp` 的命名與教學風格
+
+那才比較有機會放在 root `samples/`。([GitHub][2])
+
+換句話說：
+
+* **現在這份**：更像 `community`
+* **重構過的簡化版**：才像官方 `samples/`
+
+---
+
+## 如果你現在就要送 PR，我建議這樣做
+
+### 路線 A：最穩
+
+把它放到：
+
+`projects/rocwmma/samples/community/simple_gemm_rmsnorm.cpp`
+
+然後照 `community/README.md` 要求一起改：
+
+* `samples/community/CMakeLists.txt`
+* `samples/community/README.md`
+* 用 `add_community_sample(...)` 註冊 sample
+* build 時用 `-DROCWMMA_BUILD_COMMUNITY_SAMPLES=ON` ([GitHub][3])
+
+這條路最符合 repo 已經寫好的定位。
+
+---
+
+### 路線 B：想進 root `samples/`
+
+那我建議不要直接丟現在這份。
+先重構成兩份：
+
+1. `simple_gemm_rmsnorm.cpp`
+   做成更偏教學、簡單、少進階優化的版本
+
+2. `community/gemm_rmsnorm_advanced.cpp`
+   保留你現在這份較完整、較工程化的版本
+
+這樣比較容易被接受，因為：
+
+* root sample 保持乾淨
+* community sample 保留進階價值
+
+---
+
+## 我自己的結論
+
+### 只問「能不能 PR 到 rocwmma samples 這個專案底下？」
+
+**可以，而且 repo 選對了。** ([GitHub][1])
+
+### 只問「放 root `samples/` 適不適合？」
+
+**我偏向不適合。**
+
+### 最推薦位置
+
+**`projects/rocwmma/samples/community/` 最合理。**
+因為官方自己就把這個目錄定義成給 advanced / fusion / ML / optimization 類 sample 用的，而你這份正好符合。([GitHub][3])
+
+---
+
+## 我建議你 PR title / 定位可以寫成
+
+`[rocWMMA][community sample] Add GEMM + RMSNorm sample using rocWMMA GEMM with post-op normalization`
+
+這樣 reviewer 一看就知道：
+
+* 不是 core official simple sample
+* 是 community advanced sample
+* rocWMMA 真正用在 GEMM
+* RMSNorm 是 post-op pipeline，不會誤解成 rocWMMA 本體全部包辦 
+
+---
+
+| Key Point         | Summary                                                                                                                                                                              |
+| ----------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| Correct repo      | `ROCm/rocm-libraries` is the right upstream now; old `ROCm/rocWMMA` is retired.                                                                                                      |
+| Best location     | Your current sample fits `projects/rocwmma/samples/community/` better than root `samples/`.                                                                                          |
+| Why               | Official root samples are mostly simple/perf GEMM/GEMV-style examples, while community samples are intended for advanced fusion, ML ops, optimizations, and experimental techniques. |
+| Your sample type  | Your file is an advanced two-pass GEMM + RMSNorm pipeline with benchmarking, validation, and LDS-related logic.                                                                      |
+| Root samples fit? | Only after simplifying it into a more minimal, rocWMMA-first teaching sample.                                                                                                        |
+| PR recommendation | Submit it as a community sample and update `samples/community/CMakeLists.txt` and `samples/community/README.md`.                                                                     |
+
+| Option                                     | Fit                                       |
+| ------------------------------------------ | ----------------------------------------- |
+| `samples/` root                            | Medium to low fit for the current version |
+| `samples/community/`                       | High fit                                  |
+| Simplified rewrite for `samples/`          | Good fit after refactoring                |
+| Keep current advanced version in community | Best practical choice                     |
+
+[1]: https://github.com/ROCm/rocWMMA "GitHub - ROCm/rocWMMA: [DEPRECATED] Moved to ROCm/rocm-libraries repo · GitHub"
+[2]: https://github.com/ROCm/rocm-libraries/tree/develop/projects/rocwmma/samples "rocm-libraries/projects/rocwmma/samples at develop · ROCm/rocm-libraries · GitHub"
+[3]: https://github.com/ROCm/rocm-libraries/tree/develop/projects/rocwmma/samples/community "rocm-libraries/projects/rocwmma/samples/community at develop · ROCm/rocm-libraries · GitHub"
+
+
+
+
+可以，但**不適合直接當成「rocWMMA 入門教材」**。
+
+這份比較像：
+
+* **進階範例 / case study**
+* 或是 **「rocWMMA GEMM + 後處理」整合樣板**
+
+而不是很好的第一份教學檔。原因是它把很多層次的東西一次混在一起了：架構參數切換、fragment type、cooperative read、LDS ping-pong、warp tile、benchmark、CPU validation，外加 RMSNorm。真正最核心的 rocWMMA 概念被埋在很多模板與 helper 裡。
+
+更重要的是，檔案註解寫的是 **“GEMM + RMSNorm Fused Sample”**，但實作上其實是 **兩段式**：
+先用 `gemm_rocwmma` 把 GEMM 寫到 `d_c` workspace，再用 `rmsnorm_apply_kernel` 做 RMSNorm，host 端也是連續 launch 兩個 kernel。這代表它不是初學者直覺理解的「單 kernel 完整 fusion」。
+
+另外，**真正 rocWMMA 的教學重點**主要集中在這幾塊：
+
+* `fragment<...>` 型別定義
+* `load_matrix_sync`
+* `mma_sync`
+* `store_matrix_sync`
+* fragment/data layout 轉換
+* warp tile / macro tile 概念
+
+但這份裡面又加入了：
+
+* `apply_data_layout_t`
+* `apply_transpose_t`
+* `GetDataLayout_t`
+* `GetIOShape_t`
+* `fragment_scheduler::coop_row_major_2d`
+* LDS 雙 buffer
+* 架構差異（gfx9 / gfx11）
+
+這些都偏進階，對第一次學 rocWMMA 來說資訊密度太高。
+
+---
+
+## 我的判斷
+
+### 適合的定位
+
+這份適合當：
+
+1. **rocWMMA 進階教材**
+2. **效能優化案例**
+3. **GEMM + 後處理整合示範**
+4. **教「怎麼從簡單版長成實戰版」的最終章**
+
+### 不適合的定位
+
+不太適合當：
+
+1. **第一份 rocWMMA 教材**
+2. **給初學者第一次看 fragment / mma_sync 的範例**
+3. **想快速理解 rocWMMA API 核心概念的 sample**
+
+---
+
+## 為什麼不適合直接當入門教材
+
+### 1. 主題不夠單純
+
+檔名和目標是 `simple_gemm_rmsnorm.cpp`，但其實內容並不 simple。它同時在教：
+
+* GEMM
+* RMSNorm
+* rocWMMA
+* LDS prefetch
+* ping-pong buffering
+* arch-specific parameterization
+* benchmarking
+* CPU validation
+
+這會讓學習者搞不清楚「我現在到底是在學 rocWMMA，還是在學 kernel engineering」。
+
+### 2. rocWMMA 核心路徑被 helper 包起來
+
+像 `globalReadCoopA/B`、`localWriteCoopA/B`、`localReadA/B`、`mfma_warp_tile`、`globalWriteC` 都把真正重點拆散了。對熟悉的人很乾淨，但對教材來說不夠直觀。
+
+### 3. “fused” 這個詞會誤導
+
+註解描述的是「在 GEMM output 上直接做 RMSNorm」，但實作是：
+`gemm_rocwmma` → 寫 `d_c` → `rmsnorm_apply_kernel`。
+教學上這會讓學生誤以為 rocWMMA 本身直接處理了 RMSNorm，實際上 rocWMMA 只負責 GEMM 主體。
+
+### 4. 進階 layout / scheduler 太早出現
+
+像 `CoopScheduler`、`GRBuffA/B`、`LWBuffA/B`、`LRFragA/B` 這些概念對進階優化很重要，但不該是第一章。
+
+---
+
+## 但它其實很有價值
+
+如果你要做 **rocWMMA 教材系列**，這份很好，因為它已經有很完整的素材：
+
+* 有 architecture-aware parameter
+* 有 fragment 宣告
+* 有 `mma_sync`
+* 有 LDS double buffering
+* 有 CPU reference
+* 有 benchmark
+* 有和 LLM decoder layer 相關的 RMSNorm 背景說明
+
+也就是說，**它不適合當第一課，但很適合當第四課或第五課**。
+
+---
+
+## 有辦法改成 rocWMMA 教材嗎？
+
+**有，而且很適合改。**
+最好的做法不是「直接改這一份註解」，而是把它**拆成循序漸進的教材版本**。
+
+---
+
+## 我建議的教材拆法
+
+### 第 1 份：最小可理解版
+
+檔名建議：
+`01_rocwmma_minimal_gemm.cpp`
+
+只保留：
+
+* 單一 tile
+* 單一 warp
+* `fragment<matrix_a>`
+* `fragment<matrix_b>`
+* `fragment<accumulator>`
+* `load_matrix_sync`
+* `fill_fragment`
+* `mma_sync`
+* `store_matrix_sync`
+
+不要有：
+
+* RMSNorm
+* LDS
+* cooperative scheduler
+* architecture branch
+* benchmark
+* CPU reference 大框架
+
+**教學目的：**
+讓學生先知道 rocWMMA 最核心 API 長什麼樣。
+
+---
+
+### 第 2 份：tile 與 block 概念版
+
+檔名建議：
+`02_rocwmma_tiled_gemm.cpp`
+
+加入：
+
+* `BLOCKS_X / BLOCKS_Y`
+* warp tile
+* macro tile
+* 多個 accumulator fragment
+
+**教學目的：**
+理解「一個 warp 不一定只算 16x16，而是可拼成較大的 warp tile」。
+
+---
+
+### 第 3 份：LDS / prefetch 版
+
+檔名建議：
+`03_rocwmma_lds_pingpong_gemm.cpp`
+
+再加入：
+
+* global → LDS → fragment
+* `localReadA/B`
+* `localWriteCoopA/B`
+* ping-pong buffer
+* `synchronize_workgroup`
+
+**教學目的：**
+理解 rocWMMA 不只是 `mma_sync`，真正效能來自資料搬運設計。
+
+---
+
+### 第 4 份：GEMM + post-op 版
+
+檔名建議：
+`04_gemm_then_rmsnorm.cpp`
+
+保留兩段式：
+
+* `gemm_rocwmma`
+* `rmsnorm_apply_kernel`
+
+並且明講：
+
+> 這不是單-kernel fusion，這是 GEMM + post-op pipeline。
+
+**教學目的：**
+把 rocWMMA 放回 LLM layer 的真實使用情境。
+
+---
+
+### 第 5 份：真正進階版
+
+檔名建議：
+`05_advanced_rocwmma_case_study.cpp`
+
+這時才放你現在這份大部分內容，並加入註解：
+
+* 哪些是 rocWMMA 核心
+* 哪些是 HIP/kernel engineering
+* 哪些是跟 RMSNorm 有關、不是 rocWMMA 本體
+
+---
+
+## 這份要怎麼改，才更像教材
+
+### 最重要的改法：把主線講清楚
+
+建議把檔案拆成這種結構：
+
+```cpp
+// Part 0: What rocWMMA does here
+// Part 1: Define tile shapes and fragment types
+// Part 2: Load A/B fragments
+// Part 3: mma_sync accumulate
+// Part 4: Store GEMM result
+// Part 5: Apply RMSNorm in a separate kernel
+// Part 6: Host launch + validation
+```
+
+現在的版本比較像工程版，不像教材版。
+
+---
+
+## 我會優先改的 8 個地方
+
+### 1. 改標題
+
+把：
+
+`GEMM + RMSNorm Fused Sample`
+
+改成：
+
+`rocWMMA GEMM with Separate RMSNorm Post-Op Sample`
+
+因為目前不是嚴格意義的 fused。
+
+### 2. 把 rocWMMA-only 區塊獨立
+
+把這些收成一段教材核心：
+
+* `MfmaFragA`
+* `MfmaFragB`
+* `MfmaFragAcc`
+* `load_matrix_sync`
+* `mma_sync`
+* `store_matrix_sync`
+
+### 3. 把 RMSNorm 拆成附錄
+
+`rmsnorm_apply_kernel` 很有價值，但不要放在 rocWMMA 主教學線前面。
+
+### 4. 先去掉 gfx9/gfx11 雙分支
+
+教材先固定一組參數。
+例如先只教 gfx9 wave64 或只教 gfx11 wave32。
+
+### 5. 把 helper 展開
+
+例如 `mfma_warp_tile()` 在教材版先不要封裝，直接把 `mma_sync` 寫出來，學生比較看得懂。
+
+### 6. 先去掉 `CoopScheduler`
+
+cooperative scheduler 可以留到第二版或第三版。
+
+### 7. 加 ASCII / 圖示說明 tile mapping
+
+這份最需要的是圖，不是更多 code。
+
+### 8. 在 code 裡標出「這段不是 rocWMMA 本體」
+
+例如：
+
+* hipMalloc / hipMemcpy：runtime
+* benchmark：測試框架
+* CPU ref：驗證
+* RMSNorm：post-op，不是 rocWMMA API
+
+---
+
+## 你可以把它教成什麼樣子
+
+### 教材主題範例
+
+**從 rocWMMA 基礎到 LLM layer case study**
+
+#### Chapter 1
+
+What is rocWMMA?
+
+#### Chapter 2
+
+Minimal GEMM with fragments
+
+#### Chapter 3
+
+Warp tile and accumulator tiling
+
+#### Chapter 4
+
+LDS staging and ping-pong buffering
+
+#### Chapter 5
+
+GEMM + RMSNorm as LLM post-op pipeline
+
+#### Chapter 6
+
+What would real fusion require?
+
+---
+
+## 一句話總結
+
+**這份不是好的 rocWMMA 入門範例，但很適合改造成「rocWMMA 進階教材的最終案例」。**
+
+如果你的目標是教學，我會建議：
+
+* **不要直接拿這份當第一份教材**
+* **把它拆成 4~5 份循序版本**
+* **把這份保留成 advanced case study**
+
+---
+
+## 我給你的最實際建議
+
+最好的路線是：
+
+1. 先從這份抽出一個 **純 rocWMMA minimal GEMM**
+2. 再做一個 **tiled / LDS 版**
+3. 最後才回到這份 **GEMM + RMSNorm case study**
+
+這樣學生才會真的知道：
+
+* rocWMMA 本體是什麼
+* HIP kernel engineering 是什麼
+* post-op / fusion 又是另一層事情
+
+---
+
+| Key Point             | Summary                                                                                                          |
+| --------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| Suitability           | Not ideal as a first rocWMMA tutorial; better as an advanced case study.                                         |
+| Main problem          | Too many concepts are mixed together: rocWMMA, RMSNorm, LDS ping-pong, arch branching, benchmarking, validation. |
+| rocWMMA focus         | The real rocWMMA teaching core is fragment definitions, load/store, mma_sync, and tile mapping.                  |
+| Misleading point      | The file says “fused”, but the implementation is actually a two-pass pipeline: GEMM first, RMSNorm second.       |
+| Best use              | Use this file as the final chapter of a rocWMMA learning series.                                                 |
+| Best rewrite strategy | Split it into multiple tutorial files from minimal GEMM to advanced GEMM + post-op.                              |
+| Recommended sequence  | Minimal GEMM → tiled GEMM → LDS/ping-pong GEMM → GEMM + RMSNorm pipeline.                                        |
+| Final verdict         | Good source material for teaching, but not good as-is for beginners.                                             |
+
+| Recommendation               | Difference                        |
+| ---------------------------- | --------------------------------- |
+| Use current file directly    | Fast, but confusing for beginners |
+| Rewrite into staged教材        | Much clearer learning progression |
+| Keep RMSNorm in first lesson | Too distracting                   |
+| Move RMSNorm to later lesson | Better separation of concerns     |
+
+
+---
 # simple_gemm_rmsnorm — GEMM + RMSNorm Fused Sample
 
 ## Overview
