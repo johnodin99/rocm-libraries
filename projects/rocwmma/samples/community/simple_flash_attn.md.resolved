@@ -1,0 +1,76 @@
+# Flash Attention: Host/Device Mismatch Bug Fix
+
+## Problem
+
+[simple_flash_attn.cpp](file:///home/odin/Desktop/rocm-libraries-develop/rocm-libraries/projects/rocwmma/samples/simple_flash_attn.cpp) **PASSED** on RX 9070 (gfx1201, Wave32) but **FAILED** on MI300X (gfx942, Wave64) with ~22% relative error.
+
+## Root Cause
+
+**HIP compiles each [.cpp](file:///home/odin/Desktop/rocm-libraries-develop/rocm-libraries/projects/rocwmma/samples/perf_hgemm.cpp) twice** — once for host (x86), once for device (AMDGCN). rocWMMA's arch macros are **device-compile-only** ([config.hpp](file:///home/odin/Desktop/rocm-libraries-develop/rocm-libraries/projects/rocwmma/library/include/rocwmma/internal/config.hpp) line 48):
+
+```
+IMPORTANT: __gfx908__ and similar macros are exclusively defined
+during the device compiler pass
+```
+
+The original code used `ROCWMMA_ARCH_GFX9` to set `BLOCK_SIZE` at compile time:
+
+| Pass | `ROCWMMA_ARCH_GFX9` | `BLOCK_SIZE` | `ELEMS_PER_THREAD` |
+|---|---|---|---|
+| **Host** (x86) — always | 0 | 32 | 2 |
+| **Device** (gfx942) | 1 | **64** | **1** |
+| **Device** (gfx1201) | 0 | 32 | 2 |
+
+Host launched `blockDim=32`, but device kernel expected 64 threads. Only 32 of 64 head dims were computed.
+
+## Failed Attempts
+
+| # | Approach | Why it failed |
+|---|---|---|
+| 1 | `__shfl_xor(val, off, blockDim.x)` width arg | HIP on gfx9 ignores the width parameter |
+| 2 | LDS-based reduction (no shuffle) | Same host/device mismatch — still launched 32 threads |
+| 3 | `__AMDGCN_WAVEFRONT_SIZE__` detection | Also device-only macro; broke gfx1201 (RDNA4 may compile in Wave64 mode) |
+| 4 | `BLOCK_SIZE/2` compile-time in shuffle | Fixed MI300X but gfx1201 regressed — same host/device mismatch |
+
+## Definitive Fix
+
+Host code uses **runtime `hipDeviceProp_t::warpSize`** instead of compile-time `BLOCK_SIZE`:
+
+```diff
++    hipDeviceProp_t prop;
++    hipGetDeviceProperties(&prop, dev);
++    uint32_t rtWarpSize = prop.warpSize;
+     ...
+-    dim3 blockDim(BLOCK_SIZE, 1);       // always 32 on host
++    dim3 blockDim(rtWarpSize, 1);       // 32 or 64, matches device
+```
+
+Device code keeps using `ROCWMMA_ARCH_GFX9` (correct in device pass).
+
+## Validation
+
+Both GPUs pass with `Max relative error: 0`:
+
+````carousel
+```
+=== MI300X (gfx942, Wave64) ===
+BLOCK_SIZE=64  ELEMS=1  block=(64,1)
+PASSED!  Max relative error: 0
+```
+<!-- slide -->
+```
+=== RX 9070 (gfx1201, Wave32) ===
+BLOCK_SIZE=32  ELEMS=2  block=(32,1)
+PASSED!  Max relative error: 0
+```
+````
+
+## Files Changed
+
+- [simple_flash_attn.cpp](file:///home/odin/Desktop/rocm-libraries-develop/rocm-libraries/projects/rocwmma/samples/simple_flash_attn.cpp) — runtime warpSize in host driver
+- [simple_flash_attn.md](file:///home/odin/Desktop/rocm-libraries-develop/rocm-libraries/projects/rocwmma/samples/simple_flash_attn.md) — documented bug fix and MI300X output
+
+## Key Lesson
+
+> Never use `ROCWMMA_ARCH_*` macros in host code for values that must match
+> the device side. Use `hipDeviceProp_t::warpSize` at runtime instead.
