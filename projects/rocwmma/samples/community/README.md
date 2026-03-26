@@ -171,7 +171,7 @@ While community samples have reduced requirements, they should still:
 
 ## Sample Lifecycle
 
-### Contribution → Review → Merge
+### Contribution -> Review -> Merge
 - New samples undergo basic review for licensing, build issues, and code quality
 - Review focuses on "does it compile and demonstrate something useful?"
 - Higher scrutiny than regular code contributions is not required
@@ -215,7 +215,11 @@ For questions about contributing community samples:
 
 ## Current Community Samples
 
-*This section will be populated as samples are contributed.*
+### SwiGLU Fused Dual GEMM
+- **File**: `simple_gemm_swiglu.cpp`
+- **Description**: Fused dual-GEMM + SwiGLU activation implementing the LLaMA/Mistral FFN gate layer. Computes `D = silu(A * B_gate) * (A * B_up)` in a single kernel using cooperative global read, LDS double buffering with three segments (A / B_gate / B_up), and register-level SiLU + Hadamard product fusion.
+- **Requirements**: ROCm 6.0+; gfx9 (MI100/MI200/MI300), gfx11 (RDNA 3), gfx12 (RDNA 4); float16 I/O, float32 compute
+- **Limitations**: M, N, K must be multiples of 16 and >= macro tile size; row_major only; not production-optimized
 
 <!-- Template for documenting samples:
 ### Sample Name

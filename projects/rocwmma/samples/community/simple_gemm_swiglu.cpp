@@ -2,7 +2,7 @@
  *
  * MIT License
  *
- * Copyright (C) 2021-2025 Advanced Micro Devices, Inc. All rights reserved.
+ * Copyright (C) 2021-2026 Advanced Micro Devices, Inc. All rights reserved.
  *
  * Permission is hereby granted, free of charge, to any person obtaining a copy
  * of this software and associated documentation files (the "Software"), to deal
@@ -52,6 +52,24 @@
  *   Height = MACRO_TILE_M + MACRO_TILE_N_gate + MACRO_TILE_N_up
  *          = 64 + 64 + 64 = 192  (for gfx9, BLOCKS=2x2)
  *   Two such buffers (Lo / Hi) are allocated back-to-back.
+ *
+ * Requirements:
+ *   - Minimum ROCm version: ROCm 6.0+
+ *   - GPU architectures: gfx9 (MI100/MI200/MI300), gfx11 (RDNA 3), gfx12 (RDNA 4)
+ *   - Data types: float16 input, float32 compute, float16 output
+ *   - Matrix dimensions: M, N, K must be multiples of 16;
+ *     M >= MACRO_TILE_X, N >= MACRO_TILE_Y, K >= ROCWMMA_K
+ *
+ * Limitations:
+ *   - No boundary handling: matrices must be exact multiples of tile sizes
+ *   - Only supports row_major layout for all inputs and output
+ *   - Performance is not optimized for production use (educational sample)
+ *   - LDS usage: ~12 KiB per block (gfx9 2x2 config)
+ *   - Input values are scaled by 1/16 to prevent FP16 overflow;
+ *     real workloads may need different scaling strategies
+ *
+ * Note: This is a community-contributed sample provided as-is. It may not be
+ * maintained with the same rigor as official samples.
  */
 
 #include <cmath>
@@ -161,12 +179,12 @@ using GRBuffBGate
 using GRBuffBUp
     = fragment<matrix_b, ROCWMMA_M, MACRO_TILE_Y, ROCWMMA_K, InputT, DataLayoutBUp, CoopScheduler>;
 
-// Local write (macro tile) — apply col_major LDS layout; B must be transposed
+// Local write (macro tile) -- apply col_major LDS layout; B must be transposed
 using LWBuffA  = apply_data_layout_t<GRBuffA,                     DataLayoutLds>;
 using LWBuffBGate = apply_data_layout_t<apply_transpose_t<GRBuffBGate>, DataLayoutLds>;
 using LWBuffBUp = apply_data_layout_t<apply_transpose_t<GRBuffBUp>, DataLayoutLds>;
 
-// Local read (MFMA fragment-level) — matches LDS col_major layout
+// Local read (MFMA fragment-level) -- matches LDS col_major layout
 using LRFragA  = apply_data_layout_t<MfmaFragA,                      DataLayoutLds>;
 using LRFragBGate = apply_data_layout_t<apply_transpose_t<MfmaFragBGate>,  DataLayoutLds>;
 using LRFragBUp = apply_data_layout_t<apply_transpose_t<MfmaFragBUp>,  DataLayoutLds>;
@@ -351,7 +369,7 @@ ROCWMMA_DEVICE static inline void
 // ---------------------------------------------------------------------------
 // Main SwiGLU kernel
 //
-//   D = silu(A * B_gate)  ⊙  (A * B_up)
+//   D = silu(A * B_gate)  ?  (A * B_up)
 //
 //   A      [M x K] row_major
 //   B_gate [K x N] row_major
@@ -689,7 +707,7 @@ ROCWMMA_HOST void run_swiglu_sample(uint32_t m, uint32_t n, uint32_t k)
         return;
     }
 
-    // Leading dimensions — all row_major
+    // Leading dimensions -- all row_major
     uint32_t lda  = k; // A  [M x K] row_major
     uint32_t ldBGate = n; // Bg [K x N] row_major
     uint32_t ldBUp = n; // Bu [K x N] row_major
