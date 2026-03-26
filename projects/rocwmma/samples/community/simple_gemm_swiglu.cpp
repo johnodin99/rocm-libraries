@@ -24,46 +24,138 @@
  *
  *******************************************************************************/
 
-/* SwiGLU Fused Dual GEMM Sample
+/* SwiGLU Fused Dual GEMM -- rocWMMA Community Sample
  *
- * Implements the standard LLaMA / Mistral FFN gate layer:
+ * ============================================================================
+ * 1. WHAT IS SwiGLU?
+ * ============================================================================
+ *
+ * SwiGLU is a gated activation function proposed by Shazeer (2020) as a
+ * drop-in replacement for the standard ReLU or GELU feed-forward layer in
+ * Transformers.  It was adopted by Meta's LLaMA (Touvron et al., 2023) and
+ * subsequently by Mistral, Qwen and other major LLM families for their
+ * feed-forward network (FFN) gate layer.
+ *
+ * References:
+ *   [1] Shazeer, "GLU Variants Improve Transformer", 2020
+ *       https://arxiv.org/abs/2002.05202
+ *   [2] Touvron et al. (Meta AI), "LLaMA: Open and Efficient Foundation
+ *       Language Models", 2023
+ *       https://arxiv.org/abs/2302.13971
+ *
+ * ============================================================================
+ * 2. MATHEMATICAL FORMULATION
+ * ============================================================================
  *
  *   gate = A x B_gate                     [M x N] = [M x K] x [K x N]
  *   up   = A x B_up                       [M x N] = [M x K] x [K x N]
- *   D    = silu(gate) (x) up              element-wise (Hadamard) product
+ *   D    = silu(gate) (*) up              element-wise (Hadamard) product
  *
  * where silu(x) = x * sigmoid(x) = x / (1 + exp(-x)).
  *
- * Data layouts (matches fillRand row-major fill convention):
- *   A       : row_major  [M x K],  lda  = K
+ * In a typical LLM FFN block:
+ *   A      = hidden states              (sequence tokens)
+ *   B_gate = gate projection weights     (learned parameters)
+ *   B_up   = up   projection weights     (learned parameters)
+ *   D      = activated hidden states      (fed to down-projection next)
+ *
+ * ============================================================================
+ * 3. WHY FUSE INTO A SINGLE KERNEL?
+ * ============================================================================
+ *
+ * A naive implementation launches 3 separate kernels:
+ *   Kernel 1:  gate = A x B_gate          (GEMM)
+ *   Kernel 2:  up   = A x B_up            (GEMM)
+ *   Kernel 3:  D    = silu(gate) (*) up   (element-wise)
+ *
+ * This sample fuses all three into ONE kernel.  The benefits are:
+ *
+ *   a) A-tile reuse -- A is loaded from global memory ONCE and used for
+ *      both the gate and up GEMMs.  This cuts A's global memory traffic
+ *      by 50% compared to two separate GEMM launches.
+ *
+ *   b) Zero temporary buffers -- The gate and up accumulators live in
+ *      registers.  The SiLU activation and Hadamard product are applied
+ *      directly in registers before writing D to global memory, so no
+ *      intermediate [M x N] buffers are allocated.
+ *
+ *   c) Single launch overhead -- One kernel launch instead of three
+ *      eliminates two launch + synchronisation barriers.
+ *
+ * ============================================================================
+ * 4. WHAT YOU WILL LEARN FROM THIS SAMPLE
+ * ============================================================================
+ *
+ *   - How to declare and use rocWMMA fragment types for dual-GEMM fusion
+ *   - How cooperative global reads (fragment_scheduler::coop_row_major_2d)
+ *     distribute work across all threads in a block
+ *   - How to design a 3-segment LDS layout (A | B_gate^T | B_up^T) so that
+ *     one matrix tile can feed two independent GEMM streams
+ *   - How to implement K-loop double buffering (ping-pong) to overlap
+ *     global memory latency with MFMA compute
+ *   - How to apply an activation function (SiLU) and element-wise product
+ *     (Hadamard) directly on accumulator fragments in registers
+ *   - The ComputeT -> OutputT cast pattern (MfmaFragAcc -> MfmaFragStoreOut)
+ *
+ * ============================================================================
+ * 5. KERNEL DATA-FLOW OVERVIEW
+ * ============================================================================
+ *
+ *   Global Memory         LDS (shared)            Registers          Global Memory
+ *   +----------+     cooperative load      local read        store
+ *   | A  [MxK] | --------+-----> [A  segment ] ----> fragsA ----+
+ *   +----------+         |                                      |
+ *   |Bg [KxN]  | --------+-----> [Bg segment ] ----> fragsBGate-+--> mma -> accGate
+ *   +----------+         |       (transposed)                   |             |
+ *   |Bu [KxN]  | --------+-----> [Bu segment ] ----> fragsBUp --+--> mma -> accUp
+ *   +----------+         |       (transposed)                   |             |
+ *                    (double-buffered:                           |     silu(accGate)
+ *                     Lo <-> Hi swap                            |        * accUp
+ *                     each K-step)                              |          |
+ *                                                               |          v
+ *                                                               |     fragsD (f32)
+ *                                                               |          |
+ *                                                               |     cast to f16
+ *                                                               |          |
+ *                                                               +----> D [MxN]
+ *
+ * ============================================================================
+ * 6. DATA LAYOUTS
+ * ============================================================================
+ *
+ *   A       : row_major  [M x K],  lda     = K
  *   B_gate  : row_major  [K x N],  ldBGate = N
- *   B_up    : row_major  [K x N],  ldBUp = N
- *   D       : row_major  [M x N],  ldd  = N
+ *   B_up    : row_major  [K x N],  ldBUp   = N
+ *   D       : row_major  [M x N],  ldd     = N
  *
- * Kernel features:
- *   - Cooperative global read + LDS double buffering (ping-pong prefetch)
- *   - Three LDS segments per buffer: A | B_gate(T) | B_up(T)
- *   - A is loaded once and shared between the gate and up GEMM streams
- *   - Fused SiLU + Hadamard product in registers (zero extra global memory)
- *   - CPU reference for debug validation (active when NDEBUG is NOT set)
+ * ============================================================================
+ * 7. LDS LAYOUT (col_major, one ping-pong buffer)
+ * ============================================================================
  *
- * LDS layout (col_major, one buffer):
  *   Width  = MACRO_TILE_K
  *   Height = MACRO_TILE_M + MACRO_TILE_N_gate + MACRO_TILE_N_up
- *          = 64 + 64 + 64 = 192  (for gfx9, BLOCKS=2x2)
- *   Two such buffers (Lo / Hi) are allocated back-to-back.
+ *          = 64 + 64 + 64 = 192   (for gfx9, BLOCKS_X=2, BLOCKS_Y=2)
+ *   Two such buffers (Lo / Hi) are allocated back-to-back for double
+ *   buffering.
  *
- * Requirements:
+ * ============================================================================
+ * 8. REQUIREMENTS
+ * ============================================================================
+ *
  *   - Minimum ROCm version: ROCm 6.0+
- *   - GPU architectures: gfx9 (MI100/MI200/MI300), gfx11 (RDNA 3), gfx12 (RDNA 4)
+ *   - GPU architectures: gfx9 (MI100/MI200/MI300), gfx11 (RDNA 3),
+ *                         gfx12 (RDNA 4)
  *   - Data types: float16 input, float32 compute, float16 output
  *   - Matrix dimensions: M, N, K must be multiples of 16;
  *     M >= MACRO_TILE_X, N >= MACRO_TILE_Y, K >= ROCWMMA_K
  *
- * Limitations:
+ * ============================================================================
+ * 9. KNOWN LIMITATIONS
+ * ============================================================================
+ *
  *   - No boundary handling: matrices must be exact multiples of tile sizes
  *   - Only supports row_major layout for all inputs and output
- *   - Performance is not optimized for production use (educational sample)
+ *   - Performance is not optimised for production use (educational sample)
  *   - LDS usage: ~12 KiB per block (gfx9 2x2 config)
  *   - Input values are scaled by 1/16 to prevent FP16 overflow;
  *     real workloads may need different scaling strategies
@@ -393,6 +485,11 @@ ROCWMMA_KERNEL void __launch_bounds__(256)
     {
         // ------------------------------------------------------------------
         // Warp / tile coordinate setup
+        // Each block covers one macro tile of the output matrix.  Within a
+        // block, each warp is responsible for a WARP_TILE_X x WARP_TILE_Y
+        // sub-tile.  We compute the global (row, col) origin of this warp's
+        // sub-tile so that all subsequent address calculations can be
+        // expressed as offsets from this origin.
         // ------------------------------------------------------------------
         constexpr auto warpTileSize  = make_coord2d(WARP_TILE_X, WARP_TILE_Y);
         constexpr auto macroTileSize = make_coord2d(MACRO_TILE_X, MACRO_TILE_Y);
@@ -428,6 +525,10 @@ ROCWMMA_KERNEL void __launch_bounds__(256)
 
         // ------------------------------------------------------------------
         // Initial global pre-fetch
+        // Load the very first K-tile of A, B_gate and B_up from global
+        // memory into register buffers.  These will be written to LDS
+        // before the K-loop begins, establishing the first "Lo" buffer
+        // for the double-buffering scheme.
         // ------------------------------------------------------------------
         GRBuffA  grBuffA;
         GRBuffBGate grBuffBGate;
@@ -443,6 +544,12 @@ ROCWMMA_KERNEL void __launch_bounds__(256)
 
         // ------------------------------------------------------------------
         // LDS layout  (col_major, 3 segments stacked vertically per buffer)
+        //
+        // WHY 3 segments?  We need A, B_gate and B_up simultaneously for
+        // the dual-GEMM.  Stacking them vertically in one contiguous LDS
+        // allocation means a single HIP_DYNAMIC_SHARED pointer services
+        // all three, and the col_major layout lets each warp read its
+        // own row-slice with a simple offset.
         //
         //   Segment  | rows            | height      | content
         //   ---------+-----------------+-------------+---------
@@ -515,6 +622,13 @@ ROCWMMA_KERNEL void __launch_bounds__(256)
 
         // ------------------------------------------------------------------
         // K-loop with double-buffer prefetch
+        //
+        // WHY double-buffer?  Global memory reads have high latency
+        // (~hundreds of cycles).  By issuing the NEXT tile's global read
+        // while the CURRENT tile's MFMA compute is in flight, we overlap
+        // memory latency with arithmetic, keeping both the memory bus
+        // and the MFMA units busy simultaneously.  Two LDS buffers
+        // (Lo and Hi) are swapped each iteration to avoid WAR hazards.
         // ------------------------------------------------------------------
         for(uint32_t currentK = MACRO_TILE_K; currentK < k; currentK += MACRO_TILE_K)
         {
@@ -571,6 +685,12 @@ ROCWMMA_KERNEL void __launch_bounds__(256)
 
         // ------------------------------------------------------------------
         // Fused SwiGLU: D = silu(gate) * up  (in registers)
+        //
+        // WHY fuse here?  Both accGate and accUp are already in register
+        // fragments after the K-loop.  Applying silu() and the Hadamard
+        // product element-wise on registers avoids writing two [M x N]
+        // intermediate matrices to global memory and reading them back --
+        // saving 4 * M * N * sizeof(ComputeT) bytes of global traffic.
         // ------------------------------------------------------------------
         MfmaFragComputeOut fragsD[BLOCKS_X][BLOCKS_Y];
         apply_swiglu(fragsD, fragsAccGate, fragsAccUp);
@@ -612,7 +732,7 @@ static void swiglu_cpu_ref(uint32_t       m,
         }
     };
 
-#pragma omp parallel for
+    // Note: single-threaded for simplicity; this is only for debug validation.
     for(int i = 0; i < (int)m; i++)
     {
         for(int j = 0; j < (int)n; j++)
