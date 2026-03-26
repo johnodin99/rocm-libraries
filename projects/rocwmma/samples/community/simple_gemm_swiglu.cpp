@@ -24,7 +24,7 @@
  *
  *******************************************************************************/
 
-/* SwiGLU Fused Dual GEMM -- rocWMMA Community Sample
+/* COMMUNITY SAMPLE: SwiGLU Fused Dual GEMM
  *
  * ============================================================================
  * 1. WHAT IS SwiGLU?
@@ -155,7 +155,7 @@
  *
  *   - No boundary handling: matrices must be exact multiples of tile sizes
  *   - Only supports row_major layout for all inputs and output
- *   - Performance is not optimised for production use (educational sample)
+ *   - Performance is not optimized for production use (educational sample)
  *   - LDS usage: ~12 KiB per block (gfx9 2x2 config)
  *   - Input values are scaled by 1/16 to prevent FP16 overflow;
  *     real workloads may need different scaling strategies
@@ -981,10 +981,16 @@ ROCWMMA_HOST void run_swiglu_sample(uint32_t m, uint32_t n, uint32_t k)
     std::cout << "Finished!\n";
 }
 
-int main()
+int main(int argc, char** argv)
 {
+    std::cout << "Community Sample: SwiGLU Fused Dual GEMM" << std::endl;
+    std::cout << "This sample demonstrates: fused dual-GEMM + SiLU activation"
+              << " (LLaMA/Mistral FFN gate layer) using rocWMMA" << std::endl;
+
     // LLaMA-style FFN: hidden=128, intermediate=256, seq_len=64
     // (small enough for quick validation, multiple of tile size 16)
     run_swiglu_sample(128, 256, 128);
+
+    std::cout << "Sample completed successfully!" << std::endl;
     return 0;
 }
