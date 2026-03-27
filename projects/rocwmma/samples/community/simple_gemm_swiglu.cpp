@@ -101,23 +101,31 @@
  * 5. KERNEL DATA-FLOW OVERVIEW
  * ============================================================================
  *
- *   Global Memory         LDS (shared)            Registers          Global Memory
- *   +----------+     cooperative load      local read        store
- *   | A  [MxK] | --------+-----> [A  segment ] ----> fragsA ----+
- *   +----------+         |                                      |
- *   |Bg [KxN]  | --------+-----> [Bg segment ] ----> fragsBGate-+--> mma -> accGate
- *   +----------+         |       (transposed)                   |             |
- *   |Bu [KxN]  | --------+-----> [Bu segment ] ----> fragsBUp --+--> mma -> accUp
- *   +----------+         |       (transposed)                   |             |
- *                    (double-buffered:                           |     silu(accGate)
- *                     Lo <-> Hi swap                            |        * accUp
- *                     each K-step)                              |          |
- *                                                               |          v
- *                                                               |     fragsD (f32)
- *                                                               |          |
- *                                                               |     cast to f16
- *                                                               |          |
- *                                                               +----> D [MxN]
+ *   Global Memory --coop load--> LDS (3 segments, double-buffered)
+ *        |                            |
+ *      A [MxK]                  [A    segment]
+ *      Bg[KxN]                  [Bg^T segment]
+ *      Bu[KxN]                  [Bu^T segment]
+ *                                     |
+ *                               local read
+ *                                     |
+ *                    +-------fragsA-------+
+ *                    |                    |
+ *              fragsBGate            fragsBUp
+ *                    |                    |
+ *                   mma                  mma
+ *                    |                    |
+ *                accGate              accUp
+ *                    |                    |
+ *              silu(accGate)              |
+ *                    \                   /
+ *                     *--- Hadamard ---*
+ *                             |
+ *                        fragsD (f32)
+ *                             |
+ *                        cast to f16
+ *                             |
+ *                          D [MxN]  --store--> Global Memory
  *
  * ============================================================================
  * 6. DATA LAYOUTS
@@ -132,9 +140,39 @@
  * 7. LDS LAYOUT (col_major, one ping-pong buffer)
  * ============================================================================
  *
- *   Width  = MACRO_TILE_K
- *   Height = MACRO_TILE_M + MACRO_TILE_N_gate + MACRO_TILE_N_up
- *          = 64 + 64 + 64 = 192   (for gfx9, BLOCKS_X=2, BLOCKS_Y=2)
+ *   Three segments stacked vertically in col_major order:
+ *
+ *     Segment  | Height         | Content
+ *     ---------+----------------+---------
+ *        A     | MACRO_TILE_X   | A tile
+ *       Bg     | MACRO_TILE_Y   | B_gate^T tile
+ *       Bu     | MACRO_TILE_Y   | B_up^T tile
+ *
+ *     Width  = MACRO_TILE_K
+ *     Height = MACRO_TILE_X + 2 * MACRO_TILE_Y
+ *     ldsld  = Height  (col_major leading dimension = number of rows)
+ *
+ *   Per-architecture derivation (both share BLOCKS_X=2, BLOCKS_Y=2):
+ *
+ *     Param            | gfx9 (wave64)        | gfx11/12 (wave32)
+ *     -----------------+----------------------+---------------------
+ *     TBLOCK_X         | 128                  | 64
+ *     WARP_SIZE        | 64                   | 32
+ *     WARPS_X          | 128 / 64 = 2         | 64 / 32 = 2
+ *     WARP_TILE_X      | 2 * 16 = 32          | 2 * 16 = 32
+ *     MACRO_TILE_X     | 2 * 32 = 64          | 2 * 32 = 64
+ *     MACRO_TILE_Y     | 2 * 32 = 64          | 2 * 32 = 64
+ *     MACRO_TILE_K     | 16                   | 16
+ *     LDS Height       | 64 + 64 + 64 = 192   | 64 + 64 + 64 = 192
+ *     LDS Width        | 16                   | 16
+ *     1 buffer (elems) | 192 * 16 = 3072      | 192 * 16 = 3072
+ *     1 buffer (bytes) | 3072 * 2 = 6144 (6K) | 3072 * 2 = 6144 (6K)
+ *     Total (Lo + Hi)  | 12288 bytes (12K)    | 12288 bytes (12K)
+ *
+ *   Note: Both architectures produce identical macro tile sizes because
+ *   the halved TBLOCK_X on gfx11/12 is exactly compensated by the
+ *   halved WARP_SIZE, yielding the same WARPS_X = 2.
+ *
  *   Two such buffers (Lo / Hi) are allocated back-to-back for double
  *   buffering.
  *
@@ -987,9 +1025,30 @@ int main(int argc, char** argv)
     std::cout << "This sample demonstrates: fused dual-GEMM + SiLU activation"
               << " (LLaMA/Mistral FFN gate layer) using rocWMMA" << std::endl;
 
-    // LLaMA-style FFN: hidden=128, intermediate=256, seq_len=64
-    // (small enough for quick validation, multiple of tile size 16)
-    run_swiglu_sample(128, 256, 128);
+    // LLaMA-style FFN dimensions (M x N x K):
+    //   M=64  (seq_len)      -- A is [64 x 128]
+    //   N=256 (intermediate)  -- B_gate, B_up are [128 x 256]
+    //   K=128 (hidden_dim)    -- shared reduction dimension
+    // (small enough for quick validation, all multiples of tile size 16)
+
+
+    // sample test
+    // run_swiglu_sample(seq_len, intermediate, hidden_dim);
+    // run_swiglu_sample(64, 256, 128);
+
+
+
+    // https://huggingface.co/meta-llama/Llama-2-7b-chat-hf/blob/main/config.json
+    run_swiglu_sample(64, 11008, 4096);
+
+
+    // https://huggingface.co/meta-llama/Llama-2-13b-chat-hf/blob/main/config.json
+    run_swiglu_sample(64, 13824, 5120);
+
+    // https://huggingface.co/meta-llama/Llama-2-70b-chat-hf/blob/main/config.json
+    run_swiglu_sample(64, 28672, 8192);
+
+
 
     std::cout << "Sample completed successfully!" << std::endl;
     return 0;
