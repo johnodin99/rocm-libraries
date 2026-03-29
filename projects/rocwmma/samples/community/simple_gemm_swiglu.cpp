@@ -981,6 +981,8 @@ ROCWMMA_HOST void run_swiglu_sample(uint32_t m, uint32_t n, uint32_t k)
               << std::setw(14) << "elapsedMs"
               << std::setw(22) << "GFlops(2xGEMM)"
               << std::setw(12) << "TFlops/s"
+              << std::setw(10) << "Warmups"
+              << std::setw(10) << "Runs"
               << "\n";
 
     std::cout << std::left
@@ -993,6 +995,8 @@ ROCWMMA_HOST void run_swiglu_sample(uint32_t m, uint32_t n, uint32_t k)
               << std::setw(14) << elapsedMs
               << std::setw(22) << (gFlopsPerRun * recordRuns)
               << std::setw(12) << tFlopsPerSec
+              << std::setw(10) << warmups
+              << std::setw(10) << recordRuns
               << "\n";
 
 #if !NDEBUG
@@ -1036,18 +1040,17 @@ int main(int argc, char** argv)
     // run_swiglu_sample(seq_len, intermediate, hidden_dim);
     // run_swiglu_sample(64, 256, 128);
 
-
-
+    // Llama-2-7b
     // https://huggingface.co/meta-llama/Llama-2-7b-chat-hf/blob/main/config.json
-    run_swiglu_sample(64, 11008, 4096);
+    // run_swiglu_sample(64, 11008, 4096);
 
-
+    // Llama-2-13b
     // https://huggingface.co/meta-llama/Llama-2-13b-chat-hf/blob/main/config.json
-    run_swiglu_sample(64, 13824, 5120);
+    // run_swiglu_sample(64, 13824, 5120);
 
+    // Llama-2-70b
     // https://huggingface.co/meta-llama/Llama-2-70b-chat-hf/blob/main/config.json
     run_swiglu_sample(64, 28672, 8192);
-
 
 
     std::cout << "Sample completed successfully!" << std::endl;
